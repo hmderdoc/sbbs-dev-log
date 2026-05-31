@@ -1,0 +1,78 @@
+[webv4_custom]
+name = webv4_custom
+path = /sbbs/webv4_custom
+
+[text-browser]
+name = text-browser
+path = /sbbs/xtrn/text-browser
+
+[future-shell]
+name = future-shell
+path = /sbbs/mods
+
+[synthkart]
+name = $ynthkart
+path = /sbbs/xtrn/synthkart
+
+[nba_jam]
+name = NBA Jam
+path = /sbbs/xtrn/nba_jam
+
+[zzt]
+name = ZZT
+path = /sbbs/xtrn/zzt
+
+[avatar_chat]
+name = Avatar Chat
+path = /sbbs/xtrn/avatar_chat
+
+[avatar_chat_universal]
+name = Universal Avatar Chat
+path = /sbbs/xtrn/avatar_chat_universal
+
+[login]
+name = Future Login
+path = /sbbs/xtrn/future-login
+
+[signup]
+name = Future Signup
+path = /sbbs/mods/future_signup
+
+[ad_poster]
+name = Ad Poster
+path = /sbbs/xtrn/ad_poster
+
+[bulletins]
+name = Bulletins
+path = /sbbs/xtrn/flBullet
+
+[dumb_fps]
+name = DOOMB FPS
+path = /sbbs/xtrn/dumbfps
+
+[ibbs_last_callers]
+name = fsxNet Last Callers
+path = /sbbs/xtrn/interbbs-last-callers
+
+[ibbbs_one_liners]
+name = fsxNet One Liners
+path = /sbbs/xtrn/interbbs-oneliners
+
+; [stacktion]
+; name = Stacktion
+; path = /sbbs/xtrn/stacktion-master
+
+; [synchronet]
+; name = Synchronet
+; path = /sbbs/repo
+
+[future_bot]
+name = future_bot
+path = /sbbs/dev-log-mirrors/future_bot.git
+
+; Remote GitHub repos aren't read directly (dev-log only runs git log against a
+; local path). Track them via a local bare mirror, refreshed with:
+;   git -C /sbbs/dev-log-mirrors/<repo>.git remote update --prune
+[telnetvision]
+name = TelnetVision
+path = /sbbs/dev-log-mirrors/telnetvision.git
