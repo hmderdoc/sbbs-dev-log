@@ -8,7 +8,6 @@ var splashLib = load({}, js.exec_dir + "splash.js");
 var CONFIG = {
 	repositoriesIni: js.exec_dir + "repositories.ini",
 	recentChangesCount: 30,
-	activityWeeks: 53,
 	commitLogCount: 250,
 	splash: true
 };
@@ -392,11 +391,23 @@ function makeDateKey(dateObj) {
 		padLeft(String(dateObj.getDate()), 2).replace(/ /g, "0");
 }
 
+// Rolling 12-month window: the grid starts on the first day of this month one
+// year ago, week-aligned back to Sunday for the row layout, and runs through
+// today. Returns { today, start, weeks } so the git query and the drawn grid
+// always agree on the same span (no calendar-year Jan-Dec lock).
+function getActivityWindow() {
+	var today = new Date();
+	today.setHours(0, 0, 0, 0);
+	var start = new Date(today.getFullYear() - 1, today.getMonth(), 1);
+	start.setHours(0, 0, 0, 0);
+	start.setDate(start.getDate() - start.getDay());
+	var days = Math.round((today.getTime() - start.getTime()) / 86400000);
+	var weeks = Math.floor(days / 7) + 1;
+	return { today: today, start: start, weeks: weeks };
+}
+
 function getActivityStartDateKey() {
-	var now = new Date();
-	now.setHours(0, 0, 0, 0);
-	now.setDate(now.getDate() - ((CONFIG.activityWeeks * 7) - 1));
-	return makeDateKey(now);
+	return makeDateKey(getActivityWindow().start);
 }
 
 function maybeAddRootRepo(repos, key, value) {
@@ -825,13 +836,10 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 		drawHeader(title, subtitle);
 	}
 
-	var today = new Date();
-	today.setHours(0, 0, 0, 0);
-
-	var totalDays = CONFIG.activityWeeks * 7;
-	var startDate = new Date(today.getTime());
-	startDate.setDate(today.getDate() - (totalDays - 1));
-	startDate.setDate(startDate.getDate() - startDate.getDay());
+	var win = getActivityWindow();
+	var today = win.today;
+	var startDate = win.start;
+	var weeks = win.weeks;
 
 	var maxCount = 0;
 	var totalCommits = 0;
@@ -850,7 +858,7 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 
 	var width = termWidth();
 	var inner = width - 2;
-	var gridVisibleWidth = 5 + CONFIG.activityWeeks;
+	var gridVisibleWidth = 5 + weeks;
 	var leftPad = 0;
 	if (inner > gridVisibleWidth) {
 		leftPad = Math.floor((inner - gridVisibleWidth) / 2);
@@ -858,7 +866,7 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 
 	tableTop(width);
 	if (!compact) {
-	tableRowAnsi(" " + CLR.heading + "Change Activity Heatmap (last " + (CONFIG.activityWeeks * 7) + " days)" + CLR.reset, width);
+	tableRowAnsi(" " + CLR.heading + "Change Activity Heatmap (last 12 months)" + CLR.reset, width);
 		tableSep(width);
 	}
 
@@ -866,7 +874,7 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 	var monthChars = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 	var col;
 	var lastMonth = -1;
-	for (col = 0; col < CONFIG.activityWeeks; col++) {
+	for (col = 0; col < weeks; col++) {
 		var weekStart = new Date(startDate.getTime());
 		weekStart.setDate(startDate.getDate() + (col * 7));
 		if (weekStart.getTime() > today.getTime()) {
@@ -884,7 +892,7 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 	var row;
 	for (row = 0; row < 7; row++) {
 		var line = repeatChar(" ", leftPad) + CLR.label + padRight(dayLabels[row], 4) + CLR.reset + " ";
-		for (col = 0; col < CONFIG.activityWeeks; col++) {
+		for (col = 0; col < weeks; col++) {
 			var day = new Date(startDate.getTime());
 			day.setDate(startDate.getDate() + (col * 7) + row);
 			if (day.getTime() > today.getTime()) {
@@ -1067,7 +1075,7 @@ function showRepositoryListView() {
 				drawActivityGrid(
 					overall.counts,
 					"Activity - All Repositories",
-					STATE.repositories.length + " projects, last " + (CONFIG.activityWeeks * 7) + " days",
+					STATE.repositories.length + " projects, last 12 months",
 					overall.errors
 				);
 			continue;
@@ -1094,7 +1102,7 @@ function showOverallActivityFromMain() {
 	drawActivityGrid(
 		overall.counts,
 		"Activity - All Projects",
-		STATE.repositories.length + " projects, last " + (CONFIG.activityWeeks * 7) + " days",
+		STATE.repositories.length + " projects, last 12 months",
 		overall.errors
 	);
 }
@@ -1179,13 +1187,10 @@ function getSelectedLatest(selectedRepoIndex) {
 }
 
 function buildActivityRows(counts, width) {
-	var today = new Date();
-	today.setHours(0, 0, 0, 0);
-
-	var totalDays = CONFIG.activityWeeks * 7;
-	var startDate = new Date(today.getTime());
-	startDate.setDate(today.getDate() - (totalDays - 1));
-	startDate.setDate(startDate.getDate() - startDate.getDay());
+	var win = getActivityWindow();
+	var today = win.today;
+	var startDate = win.start;
+	var weeks = win.weeks;
 
 	var maxCount = 0;
 	var totalCommits = 0;
@@ -1203,7 +1208,7 @@ function buildActivityRows(counts, width) {
 	}
 
 	var inner = width - 2;
-	var gridVisibleWidth = 5 + CONFIG.activityWeeks;
+	var gridVisibleWidth = 5 + weeks;
 	var leftPad = 0;
 	if (inner > gridVisibleWidth) {
 		leftPad = Math.floor((inner - gridVisibleWidth) / 2);
@@ -1214,7 +1219,7 @@ function buildActivityRows(counts, width) {
 	var monthChars = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 	var col;
 	var lastMonth = -1;
-	for (col = 0; col < CONFIG.activityWeeks; col++) {
+	for (col = 0; col < weeks; col++) {
 		var weekStart = new Date(startDate.getTime());
 		weekStart.setDate(startDate.getDate() + (col * 7));
 		if (weekStart.getTime() > today.getTime()) {
@@ -1232,7 +1237,7 @@ function buildActivityRows(counts, width) {
 	var row;
 	for (row = 0; row < 7; row++) {
 		var line = repeatChar(" ", leftPad) + CLR.label + padRight(dayLabels[row], 4) + CLR.reset + " ";
-		for (col = 0; col < CONFIG.activityWeeks; col++) {
+		for (col = 0; col < weeks; col++) {
 			var day = new Date(startDate.getTime());
 			day.setDate(startDate.getDate() + (col * 7) + row);
 			if (day.getTime() > today.getTime()) {
