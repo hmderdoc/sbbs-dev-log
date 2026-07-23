@@ -3,11 +3,14 @@
 load("sbbsdefs.js");
 load("frame.js");
 
+var splashLib = load({}, js.exec_dir + "splash.js");
+
 var CONFIG = {
 	repositoriesIni: js.exec_dir + "repositories.ini",
 	recentChangesCount: 30,
 	activityWeeks: 53,
-	commitLogCount: 250
+	commitLogCount: 250,
+	splash: true
 };
 
 var STATE = {
@@ -26,6 +29,7 @@ var UI = {
 	width: 80,
 	height: 24,
 	left: 1,
+	top: 1,
 	rootFrame: null,
 	contentFrame: null,
 	lastCols: 0,
@@ -48,24 +52,49 @@ var CH = {
 	BLOCK: "\xDB"
 };
 
+/*	Fields used to be separated by a printed glyph -- CP437 0xFA, the middle dot.
+	It came out of at least one real terminal as a double-line box corner, which
+	is what you get for routing a character through a charset negotiation you do
+	not control: the borders and the shade blocks survive the trip and one stray
+	byte in the punctuation range does not.  There is nothing to fix, because
+	there is no longer a character to get wrong -- the fields are separated by
+	colour and by space, and every glyph this door prints is now either ASCII or
+	one of the box/shade characters that demonstrably arrive intact. */
+
+/*	Synthwave.  The heatmap is a sunset: deep blue night at the bottom, up through
+	purple and hot pink, to a yellow core where the work was heaviest.  That is a
+	real gradient with a real direction, which is the point -- the old ramp ran
+	blue, cyan, green, yellow, red, and a viewer had no way to know which end was
+	"a lot" without reading the legend.  Nobody has to be told which end of a
+	sunset is the sun. */
 var CLR = {
 	reset: "\x01n",
-	border: "\x01n\x01h\x01b",
+	border: "\x01n\x01m",				// magenta: the neon tube, unlit
 	title: "\x01n\x01h\x01c",
 	heading: "\x01n\x01h\x01w",
-	label: "\x01n\x01h\x01y",
+	label: "\x01n\x01h\x01c",
 	value: "\x01n\x01w",
 	subtle: "\x01n\x01c",
 	dim: "\x01n\x01h\x01k",
 	alt: "\x01n\x01h\x01m",
-	ok: "\x01n\x01h\x01g",
+	ok: "\x01n\x01h\x01c",
 	warn: "\x01n\x01h\x01y",
 	bad: "\x01n\x01h\x01r",
-	a1: "\x01n\x01b",
-	a2: "\x01n\x01c",
-	a3: "\x01n\x01h\x01g",
-	a4: "\x01n\x01h\x01y",
-	a5: "\x01n\x01h\x01r"
+	a1: "\x01n\x01b",					// deep blue    - the night
+	a2: "\x01n\x01m",					// purple
+	a3: "\x01n\x01h\x01m",				// hot pink
+	a4: "\x01n\x01h\x01r",				// coral
+	a5: "\x01n\x01h\x01y"				// yellow       - the sun
+};
+
+/*	The same ramp as attributes rather than ctrl-A codes, for the cells the
+	animation repaints directly.  Kept next to CLR so the two cannot drift. */
+var ATTR = {
+	borderBase: MAGENTA,
+	chase: [LIGHTMAGENTA, LIGHTMAGENTA, LIGHTCYAN, WHITE, LIGHTCYAN, LIGHTMAGENTA],
+	titleWord: LIGHTCYAN,
+	titleTag: LIGHTMAGENTA,
+	shimmer: [WHITE, LIGHTCYAN]
 };
 
 if (typeof KEY_UP === "undefined") var KEY_UP = "\x1e";
@@ -190,19 +219,29 @@ function beginCenteredViewport(width, height) {
 		left = 1;
 	}
 
+	/*	Centre it down the screen as well as across.  It was pinned to row 1, which
+		on the 24-row terminal it was designed against is the same thing -- the box
+		filled the screen and there was nothing to centre.  On anything taller the
+		box sat jammed against the top with all the slack pooled underneath it. */
+	var top = Math.floor((rows - targetHeight) / 2) + 1;
+	if (top < 1) {
+		top = 1;
+	}
+
 	var needsRebuild = !UI.rootFrame ||
 		!UI.contentFrame ||
 		UI.lastCols !== cols ||
 		UI.lastRows !== rows ||
 		UI.width !== targetWidth ||
 		UI.height !== targetHeight ||
-		UI.left !== left;
+		UI.left !== left ||
+		UI.top !== top;
 
 	if (needsRebuild) {
 		endCenteredViewport();
 		UI.rootFrame = new Frame();
 		UI.rootFrame.checkbounds = false;
-		UI.contentFrame = new Frame(left, 1, targetWidth, targetHeight, undefined, UI.rootFrame);
+		UI.contentFrame = new Frame(left, top, targetWidth, targetHeight, undefined, UI.rootFrame);
 		UI.contentFrame.v_scroll = false;
 		UI.rootFrame.open();
 		UI.contentFrame.open();
@@ -211,6 +250,7 @@ function beginCenteredViewport(width, height) {
 		UI.width = targetWidth;
 		UI.height = targetHeight;
 		UI.left = left;
+		UI.top = top;
 	}
 
 	UI.contentFrame.clear();
@@ -236,6 +276,7 @@ function endCenteredViewport() {
 	UI.contentFrame = null;
 	UI.lastCols = 0;
 	UI.lastRows = 0;
+	UI.top = 1;
 }
 
 function uiPrint(text, contentWidth) {
@@ -1213,8 +1254,10 @@ function buildActivityRows(counts, width) {
 }
 
 function menuRowText(text, selected) {
+	// Ctrl-A background codes are digits: 4 was blue, 5 is magenta -- the highlight
+	// now belongs to the same palette as the box it sits inside.
 	if (selected) {
-		return "\x01n\x014\x01h\x01w " + text + " \x01n";
+		return "\x01n\x015\x01h\x01w " + text + " \x01n";
 	}
 	return " " + CLR.value + text + CLR.reset;
 }
@@ -1257,6 +1300,127 @@ function showMessageBox(title, message, color) {
 	console.getkey(K_NOCRLF | K_NOECHO | K_NOSPIN);
 }
 
+/*	The moving parts of the main screen.
+
+	Everything below repaints attributes, never characters.  The box and the title
+	are drawn once, by drawMainScreen(), and the animation then walks over the
+	cells they left behind and changes only what colour they are -- which is why
+	it can light up a corner or a tee without knowing which is which, and why the
+	whole thing costs almost nothing on the wire.  Frame.setData() drops any cell
+	whose character and attribute both match what is already there, so a frame in
+	which only the comet moved sends only the cells the comet moved through. */
+var ANIM = {
+	phase: 0,
+	perim: null,		// the box's outline, in clockwise order
+	perimWidth: 0,
+	title: null			// where the two words sit on the title row
+};
+
+var ANIM_TICK_MS = 80;
+var CHASE_STEP = 3;			// cells the comet advances per tick
+var TITLE_ROW = 1;			// 0-based: top border is row 0
+var BOX_ROWS = 23;			// rows the box occupies, border to border
+
+/*	The outline, once, in clockwise order from the top-left corner.  We store only
+	coordinates: the character living at each one is read back out of the frame at
+	paint time, so corners, tees and plain runs all light up correctly without this
+	code ever having to know the difference. */
+function buildPerimeter(width) {
+	if (ANIM.perim && ANIM.perimWidth === width) {
+		return ANIM.perim;
+	}
+	var cells = [];
+	var x, y;
+	for (x = 0; x < width; x++) {
+		cells.push({ x: x, y: 0 });
+	}
+	for (y = 1; y < BOX_ROWS - 1; y++) {
+		cells.push({ x: width - 1, y: y });
+	}
+	for (x = width - 1; x >= 0; x--) {
+		cells.push({ x: x, y: BOX_ROWS - 1 });
+	}
+	for (y = BOX_ROWS - 2; y >= 1; y--) {
+		cells.push({ x: 0, y: y });
+	}
+	ANIM.perim = cells;
+	ANIM.perimWidth = width;
+	return cells;
+}
+
+/*	Two comets, chasing each other round the tube half a lap apart.  One looks like
+	a loading spinner; two look like the thing is plugged in. */
+function paintBorder(phase) {
+	var frame = UI.contentFrame;
+	if (!frame) {
+		return;
+	}
+	var cells = buildPerimeter(UI.width);
+	var total = cells.length;
+	var heads = [
+		(phase * CHASE_STEP) % total,
+		((phase * CHASE_STEP) + Math.floor(total / 2)) % total
+	];
+
+	for (var i = 0; i < total; i++) {
+		var attr = ATTR.borderBase;
+		for (var h = 0; h < heads.length; h++) {
+			var d = (i - heads[h] + total) % total;		// distance *behind* the head
+			if (d < ATTR.chase.length) {
+				attr = ATTR.chase[d];
+				break;
+			}
+		}
+		var cell = cells[i];
+		var was = frame.getData(cell.x, cell.y, false);
+		if (was && was.ch) {
+			frame.setData(cell.x, cell.y, was.ch, attr, false);
+		}
+	}
+}
+
+/*	"DEV LOG" and its tagline, in two colours, with a highlight running across the
+	pair of them.  The words are separated by colour and by space and by nothing
+	else -- there is no glyph between them to get garbled in transit. */
+function paintTitle(phase) {
+	var frame = UI.contentFrame;
+	if (!frame) {
+		return;
+	}
+
+	var word = "DEV LOG";
+	var tag = "what got built around here";
+	var gap = 3;
+	var text = word + repeatChar(" ", gap) + tag;
+	var x0 = 1 + Math.floor(((UI.width - 2) - text.length) / 2);
+	if (x0 < 1) {
+		x0 = 1;
+	}
+
+	/*	The highlight runs the length of the title and then stays away for a while.
+		A shimmer with no rest in it is not a shimmer, it is a barber's pole. */
+	var travel = text.length + 30;
+	var head = ((phase * 2) % travel);
+
+	for (var i = 0; i < text.length; i++) {
+		var ch = text.charAt(i);
+		if (ch === " ") {
+			continue;
+		}
+		var attr = (i < word.length) ? ATTR.titleWord : ATTR.titleTag;
+		var d = Math.abs(i - head);
+		if (d < ATTR.shimmer.length) {
+			attr = ATTR.shimmer[d];
+		}
+		frame.setData(x0 + i, TITLE_ROW, ch, attr, false);
+	}
+}
+
+function animateChrome() {
+	paintBorder(ANIM.phase);
+	paintTitle(ANIM.phase);
+}
+
 function drawMainScreen(selectedMenuIndex, selectedRepoIndex) {
 	var selected = getSelectedActivity(selectedRepoIndex);
 	var width = termWidth();
@@ -1266,10 +1430,25 @@ function drawMainScreen(selectedMenuIndex, selectedRepoIndex) {
 
 	beginCenteredViewport(width, 24);
 	tableTop(width);
-	tableRowPlain(padCenter("Project Activity", inner), "\x01n\x01h\x01g", width);
-	tableRowAnsi(" " + CLR.subtle + "Activity:" + CLR.reset + " " + CLR.heading + selected.title + CLR.reset
-		+ "  " + CLR.dim + CH.S2 + CLR.reset + "  " + CLR.subtle + "Project picker:" + CLR.reset
-		+ " " + CLR.heading + repoPickerLabel(selectedRepoIndex) + CLR.reset, width);
+
+	/*	Laid down blank, then painted cell by cell by paintTitle() -- the two words
+		are different colours and a highlight runs across them, and neither of those
+		is expressible in a ctrl-A string that gets rewritten every frame. */
+	tableRowPlain("", CLR.value, width);
+
+	/*	This row used to print the selected project twice -- once as "Activity:"
+		and again as "Project picker:", which are the same string -- and the
+		picker at the foot of the screen printed it a third time.  The row is
+		better spent saying what the grid below it is, because nothing else on
+		the screen does: a wall of coloured squares means one thing to someone
+		who lives in a git client and nothing at all to everybody else. */
+	tableRowAnsi(" " + CLR.subtle + "Showing:" + CLR.reset + " " + CLR.heading +
+		truncateText(repoPickerLabel(selectedRepoIndex), 22) + CLR.reset +
+		"   " + CLR.subtle + "one square = one day" + CLR.reset +
+		"   " + CLR.subtle + "quiet " + CLR.reset +
+		activityCell(0) + activityCell(1) + activityCell(2) +
+		activityCell(3) + activityCell(4) + activityCell(5) +
+		CLR.subtle + " busy" + CLR.reset, width);
 	tableSep(width);
 
 	var i;
@@ -1277,17 +1456,21 @@ function drawMainScreen(selectedMenuIndex, selectedRepoIndex) {
 		tableRowAnsi(activity.rows[i], width);
 	}
 	tableSep(width);
-	tableRowAnsi(" " + CLR.label + "Total changes:" + CLR.reset + " " + CLR.ok + activity.totalCommits + CLR.reset +
-		"   " + CLR.label + "Active days:" + CLR.reset + " " + CLR.value + activity.activeDays + CLR.reset +
-		"   " + CLR.label + "Peak/day:" + CLR.reset + " " + CLR.value + activity.maxCount + CLR.reset, width);
+	tableRowAnsi(" " + CLR.label + "Changes:" + CLR.reset + " " + CLR.ok + activity.totalCommits + CLR.reset +
+		"   " + CLR.label + "Days worked:" + CLR.reset + " " + CLR.value + activity.activeDays + CLR.reset +
+		"   " + CLR.label + "Busiest day:" + CLR.reset + " " + CLR.value + activity.maxCount + CLR.reset +
+		" " + CLR.subtle + "changes" + CLR.reset, width);
 	tableSep(width);
 
+	/*	The newest thing anyone did, run as the lead item.  "Latest / Message" was
+		accurate and told you nothing; the words a commit subject is are a
+		headline, so we label it as one and give it the room to be read. */
 	var kpiLabel = "\x01n\x01c";    // CYAN
 	var kpiMessage = "\x01n\x01h\x01c"; // LIGHT_CYAN
-	var msgPrefixLen = 9; // " Message: "
+	var headlineIndent = 3;
 
 	if (latest.ok) {
-		var msgWrapWidth = inner - msgPrefixLen;
+		var msgWrapWidth = inner - headlineIndent;
 		if (msgWrapWidth < 10) {
 			msgWrapWidth = 10;
 		}
@@ -1296,26 +1479,32 @@ function drawMainScreen(selectedMenuIndex, selectedRepoIndex) {
 			wrapped.push("");
 		}
 
-		tableRowAnsi(" " + kpiLabel + "Latest:" + CLR.reset + " " + CLR.ok + latest.date + CLR.reset +
-			"   " + kpiLabel + "Project:" + CLR.reset + " " + CLR.subtle + "[" + latest.repo + "]" + CLR.reset, width);
-		tableRowAnsi(" " + kpiLabel + "Message:" + CLR.reset + " " + kpiMessage + wrapped[0] + CLR.reset, width);
-		tableRowAnsi(" " + repeatChar(" ", 8) + kpiMessage + wrapped[1] + CLR.reset, width);
+		tableRowAnsi(" " + CLR.label + "LATEST" + CLR.reset +
+			"   " + CLR.ok + latest.date + CLR.reset +
+			"   " + kpiLabel + "in" + CLR.reset +
+			" " + CLR.heading + latest.repo + CLR.reset, width);
+		tableRowAnsi("   " + kpiMessage + wrapped[0] + CLR.reset, width);
+		tableRowAnsi("   " + kpiMessage + wrapped[1] + CLR.reset, width);
 	} else {
-		tableRowAnsi(" " + kpiLabel + "Latest:" + CLR.reset + " " + CLR.bad + "[" + latest.error + "]" + CLR.reset, width);
-		tableRowAnsi(" " + kpiLabel + "Message:" + CLR.reset + " " + kpiMessage + "n/a" + CLR.reset, width);
+		tableRowAnsi(" " + CLR.label + "LATEST" + CLR.reset +
+			"   " + CLR.bad + latest.error + CLR.reset, width);
+		tableRowAnsi("   " + CLR.subtle + "nothing to report" + CLR.reset, width);
 		tableRowAnsi(" ", width);
 	}
 	tableSep(width);
 
 	var repoText = "Project: " + CLR.label + "< " + CLR.reset + truncateText(repoPickerLabel(selectedRepoIndex), width - 24) + CLR.label + " >" + CLR.reset;
 	var logText = selectedRepoIndex > 0
-		? "View Ordered Change Log"
-		: "View Ordered Change Log " + CLR.dim + "(select a specific project)" + CLR.reset;
+		? "Read every change to this project, newest first"
+		: "Read every change to a project " + CLR.dim + "(pick one with LEFT/RIGHT first)" + CLR.reset;
 
 	tableRowAnsi(" " + CLR.value + repoText + CLR.reset, width);
 	tableRowAnsi(menuRowText(logText, selectedMenuIndex === 0), width);
 	tableRowAnsi(menuRowText("Quit", selectedMenuIndex === 1), width);
 	tableBottom(width);
+
+	// The box and the title were just laid down flat; light them.
+	animateChrome();
 	cycleCenteredViewport();
 }
 
@@ -1428,7 +1617,39 @@ function reloadRepositories() {
 	clearCaches();
 }
 
+/*	The title sequence.  It runs before anything is read from git, so the door
+	answers instantly rather than opening on a blank screen while it shells out
+	to a dozen repositories.
+
+	The key that skips it is thrown away on purpose.  A key pressed at a splash
+	means "get on with it" and nothing else; feed it forward and someone who
+	taps a key to skip the animation finds they have also picked a menu item. */
+function playSplash() {
+	if (!CONFIG.splash) {
+		return;
+	}
+	if (!console.term_supports(USER_ANSI) || console.screen_rows < 20 || console.screen_columns < 60) {
+		return;
+	}
+
+	var frame = null;
+	try {
+		frame = new Frame(1, 1, console.screen_columns, console.screen_rows, BG_BLACK | LIGHTGRAY);
+		frame.open();
+		splashLib.play(frame);
+	} catch (e) {
+		// A splash that throws must not take the door down with it.
+	}
+
+	if (frame) {
+		try { frame.close(); } catch (e1) {}
+		try { frame.delete(); } catch (e2) {}
+	}
+	console.clear();
+}
+
 function main() {
+	playSplash();
 	reloadRepositories();
 	var selectedMenuIndex = 1; // default to Quit for fast pass-through
 	var selectedRepoIndex = 0; // 0 = all repositories
@@ -1440,10 +1661,26 @@ function main() {
 		}
 		drawMainScreen(selectedMenuIndex, selectedRepoIndex);
 
-		var key = console.getkey(K_NOCRLF | K_NOECHO | K_NOSPIN | K_UPPER);
-		if (!key) {
-			continue;
+		/*	Wait for a key without standing still.  getkey() blocks, which froze the
+			border and the title solid between keystrokes -- so we poll instead, and
+			every tick that comes back empty is a frame of animation.
+
+			The screen itself is not rebuilt here, only relit: drawMainScreen() runs
+			once per keypress, and the loop below repaints attributes over the cells
+			it left.  Redrawing the whole screen twelve times a second would mean
+			re-reading git and rebuilding a year of heatmap rows to move a comet
+			three cells. */
+		var key = "";
+		while (bbs.online && !key) {
+			ANIM.phase += 1;
+			animateChrome();
+			cycleCenteredViewport();
+			key = console.inkey(K_NONE, ANIM_TICK_MS);
 		}
+		if (!key) {
+			break;
+		}
+		key = key.toUpperCase();
 
 		if (key === "Q" || key === KEY_ESC || key === "\x1b") {
 			endCenteredViewport();
