@@ -5,6 +5,65 @@ load("frame.js");
 
 var splashLib = load({}, js.exec_dir + "splash.js");
 
+var Scene3dMod = null;
+var Scene3dVersion = null;
+var depthLayers = null;
+var SCENE3D_ORDER = ["glass", "title", "chrome", "content", "splash", "backdrop"];
+var SCENE3D_INDEX = { glass: 0, title: 1, chrome: 2, content: 3, splash: 4, backdrop: 5 };
+try {
+	Scene3dMod = load("/sbbs/mods/load/scene3d.js");
+	Scene3dVersion = Scene3dMod.probe(500);
+} catch (e) {
+	try { log(LOG_WARNING, "dev-log scene3d unavailable: " + e); } catch (_) {}
+}
+
+function initDepth() {
+	if (!Scene3dMod || !Scene3dMod.supportsTextLayers(Scene3dVersion)) return;
+	var layers = new Scene3dMod.TextDepthLayers({
+		spread: 3.5,
+		order: SCENE3D_ORDER,
+		depths: {
+			glass: 0.0,
+			title: 0.08,
+			chrome: 0.22,
+			content: 0.48,
+			splash: 0.68,
+			backdrop: 1.0
+		},
+		bandFor: function (frame) {
+			var node = frame;
+			for (var hops = 0; node && hops < 6; hops++) {
+				if (node._scene3dBand) return node._scene3dBand;
+				try { node = node.parent; } catch (e) { return "glass"; }
+			}
+			return "glass";
+		},
+		log: function (message) {
+			try { log(LOG_INFO, "dev-log " + message); } catch (e) {}
+		}
+	});
+	if (layers.install(typeof Display !== "undefined" ? Display : null)) depthLayers = layers;
+}
+
+/* Raw-console views (commit lists and message boxes) use the same depth table
+	as the framed dashboard. Keep TextDepthLayers' current-layer model in sync so
+	the next frame diff always starts from the layer the terminal really has. */
+function selectRawDepth(band) {
+	if (!depthLayers || !Scene3dMod) return;
+	var layer = SCENE3D_INDEX[band];
+	if (layer === undefined) layer = 0;
+	try { console.write(Scene3dMod.selectTextLayerSeq(layer)); } catch (e) { return; }
+	depthLayers._curLayer = layer;
+}
+
+function disposeDepth() {
+	if (!depthLayers) return;
+	try { depthLayers.dispose(); } catch (e) {}
+	depthLayers = null;
+}
+
+initDepth();
+
 var CONFIG = {
 	repositoriesIni: js.exec_dir + "repositories.ini",
 	recentChangesCount: 30,
@@ -31,6 +90,8 @@ var UI = {
 	top: 1,
 	rootFrame: null,
 	contentFrame: null,
+	chromeFrame: null,
+	titleFrame: null,
 	lastCols: 0,
 	lastRows: 0
 };
@@ -240,10 +301,22 @@ function beginCenteredViewport(width, height) {
 		endCenteredViewport();
 		UI.rootFrame = new Frame();
 		UI.rootFrame.checkbounds = false;
+		UI.rootFrame._scene3dBand = "backdrop";
 		UI.contentFrame = new Frame(left, top, targetWidth, targetHeight, undefined, UI.rootFrame);
 		UI.contentFrame.v_scroll = false;
+		UI.contentFrame._scene3dBand = "content";
+		if (depthLayers) {
+			UI.chromeFrame = new Frame(left, top, targetWidth, targetHeight, undefined, UI.rootFrame);
+			UI.chromeFrame.transparent = true;
+			UI.chromeFrame._scene3dBand = "chrome";
+			UI.titleFrame = new Frame(left, top + TITLE_ROW, targetWidth, 1, undefined, UI.rootFrame);
+			UI.titleFrame.transparent = true;
+			UI.titleFrame._scene3dBand = "title";
+		}
 		UI.rootFrame.open();
 		UI.contentFrame.open();
+		if (UI.chromeFrame) UI.chromeFrame.open();
+		if (UI.titleFrame) UI.titleFrame.open();
 		UI.lastCols = cols;
 		UI.lastRows = rows;
 		UI.width = targetWidth;
@@ -253,6 +326,8 @@ function beginCenteredViewport(width, height) {
 	}
 
 	UI.contentFrame.clear();
+	if (UI.chromeFrame) UI.chromeFrame.clear();
+	if (UI.titleFrame) UI.titleFrame.clear();
 	UI.contentFrame.home();
 	UI.active = true;
 	UI.row = 1;
@@ -273,6 +348,8 @@ function endCenteredViewport() {
 	}
 	UI.rootFrame = null;
 	UI.contentFrame = null;
+	UI.chromeFrame = null;
+	UI.titleFrame = null;
 	UI.lastCols = 0;
 	UI.lastRows = 0;
 	UI.top = 1;
@@ -302,24 +379,29 @@ function uiPrint(text, contentWidth) {
 }
 
 function tableTop(width) {
+	if (!UI.active) selectRawDepth("chrome");
 	uiPrint(CLR.border + CH.TL + repeatChar(CH.H, width - 2) + CH.TR + CLR.reset, width);
 }
 
 function tableSep(width) {
+	if (!UI.active) selectRawDepth("chrome");
 	uiPrint(CLR.border + CH.L + repeatChar(CH.H, width - 2) + CH.R + CLR.reset, width);
 }
 
 function tableBottom(width) {
+	if (!UI.active) selectRawDepth("chrome");
 	uiPrint(CLR.border + CH.BL + repeatChar(CH.H, width - 2) + CH.BR + CLR.reset, width);
 }
 
-function tableRowPlain(text, color, width) {
+function tableRowPlain(text, color, width, depthBand) {
+	if (!UI.active) selectRawDepth(depthBand || "content");
 	var inner = width - 2;
 	text = padRight(truncateText(text, inner), inner);
 	uiPrint(CLR.border + CH.V + (color || CLR.value) + text + CLR.border + CH.V + CLR.reset, width);
 }
 
-function tableRowAnsi(text, width) {
+function tableRowAnsi(text, width, depthBand) {
+	if (!UI.active) selectRawDepth(depthBand || "content");
 	var inner = width - 2;
 	text = padRightAnsi(text, inner);
 	if (visibleLen(text) > inner) {
@@ -805,9 +887,10 @@ function activityCell(level) {
 function drawHeader(title, subtitle) {
 	var width = termWidth();
 	var inner = width - 2;
+	selectRawDepth("glass");
 	console.clear();
 	tableTop(width);
-	tableRowPlain(padCenter(truncateText(title, inner), inner), CLR.title, width);
+	tableRowPlain(padCenter(truncateText(title, inner), inner), CLR.title, width, "title");
 	if (subtitle) {
 		tableRowPlain(" " + truncateText(subtitle, inner - 1), CLR.subtle, width);
 	}
@@ -816,6 +899,7 @@ function drawHeader(title, subtitle) {
 }
 
 function promptInput(label, maxLen, upper) {
+	selectRawDepth("glass");
 	uiPrint(CLR.label + label + " " + CLR.reset, termWidth());
 	var mode = K_LINE;
 	if (upper) {
@@ -936,6 +1020,7 @@ function drawActivityGrid(counts, title, subtitle, errorList, options) {
 	tableBottom(width);
 	console.crlf();
 	if (!noPause) {
+		selectRawDepth("glass");
 		console.pause();
 	}
 }
@@ -1302,6 +1387,7 @@ function showMessageBox(title, message, color) {
 	tableBottom(width);
 	console.crlf();
 	uiPrint(CLR.subtle + "Press any key..." + CLR.reset, width);
+	selectRawDepth("glass");
 	console.getkey(K_NOCRLF | K_NOECHO | K_NOSPIN);
 }
 
@@ -1356,7 +1442,8 @@ function buildPerimeter(width) {
 /*	Two comets, chasing each other round the tube half a lap apart.  One looks like
 	a loading spinner; two look like the thing is plugged in. */
 function paintBorder(phase) {
-	var frame = UI.contentFrame;
+	var frame = UI.chromeFrame || UI.contentFrame;
+	var source = UI.contentFrame;
 	if (!frame) {
 		return;
 	}
@@ -1377,7 +1464,7 @@ function paintBorder(phase) {
 			}
 		}
 		var cell = cells[i];
-		var was = frame.getData(cell.x, cell.y, false);
+		var was = source.getData(cell.x, cell.y, false);
 		if (was && was.ch) {
 			frame.setData(cell.x, cell.y, was.ch, attr, false);
 		}
@@ -1388,7 +1475,7 @@ function paintBorder(phase) {
 	pair of them.  The words are separated by colour and by space and by nothing
 	else -- there is no glyph between them to get garbled in transit. */
 function paintTitle(phase) {
-	var frame = UI.contentFrame;
+	var frame = UI.titleFrame || UI.contentFrame;
 	if (!frame) {
 		return;
 	}
@@ -1417,7 +1504,7 @@ function paintTitle(phase) {
 		if (d < ATTR.shimmer.length) {
 			attr = ATTR.shimmer[d];
 		}
-		frame.setData(x0 + i, TITLE_ROW, ch, attr, false);
+		frame.setData(x0 + i, UI.titleFrame ? 0 : TITLE_ROW, ch, attr, false);
 	}
 }
 
@@ -1640,6 +1727,7 @@ function playSplash() {
 	var frame = null;
 	try {
 		frame = new Frame(1, 1, console.screen_columns, console.screen_rows, BG_BLACK | LIGHTGRAY);
+		frame._scene3dBand = "splash";
 		frame.open();
 		splashLib.play(frame);
 	} catch (e) {
@@ -1732,4 +1820,9 @@ function main() {
 	endCenteredViewport();
 }
 
-main();
+try {
+	main();
+} finally {
+	endCenteredViewport();
+	disposeDepth();
+}
